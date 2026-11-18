@@ -245,15 +245,15 @@ function assistAim(a) {
 let lastAimSource = 'mouse';
 addEventListener('mousemove', () => { lastAimSource = 'mouse'; });
 function aimAngle() {
-  if (Math.hypot(gamepad.aimX, gamepad.aimY) > 0.2) { lastAimSource = 'pad'; return assistAim(Math.atan2(gamepad.aimX, -gamepad.aimY)); }
-  if (gamepad.connected && Math.hypot(gamepad.moveX, gamepad.moveY) > 0.2) { lastAimSource = 'pad'; return assistAim(Math.atan2(gamepad.moveX, -gamepad.moveY)); }
+  if (Math.hypot(gamepad.aimX, gamepad.aimY) > 0.2) { lastAimSource = 'pad'; return assistAim(Math.atan2(gamepad.aimX, gamepad.aimY)); }
+  if (gamepad.connected && Math.hypot(gamepad.moveX, gamepad.moveY) > 0.2) { lastAimSource = 'pad'; return assistAim(Math.atan2(gamepad.moveX, gamepad.moveY)); }
   if (lastAimSource === 'pad' && gamepad.connected) return assistAim(player.face);
   return Math.atan2(mouse.world.x - player.pos.x, mouse.world.z - player.pos.z);
 }
 // Short input buffer: a dash or trompo pressed a hair too early still comes out.
 const inputBuffer = { dash: 0, cast: 0 };
 function moveInput() {
-  let x = gamepad.moveX, z = -gamepad.moveY;
+  let x = gamepad.moveX, z = gamepad.moveY;
   if (keys.KeyW || keys.ArrowUp) z -= 1; if (keys.KeyS || keys.ArrowDown) z += 1;
   if (keys.KeyA || keys.ArrowLeft) x -= 1; if (keys.KeyD || keys.ArrowRight) x += 1;
   const l = Math.hypot(x, z);
