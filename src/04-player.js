@@ -227,11 +227,31 @@ function setupPlayer(weapon) {
   player.wMesh = weaponMesh(weapon); player.rig.hand.add(player.wMesh);
   if (WEAPONS[weapon].init) WEAPONS[weapon].init();
 }
+// Gamepad aim gets a gentle magnet towards the closest enemy inside a narrow cone.
+function assistAim(a) {
+  if (!settings.aimAssist) return a;
+  let best = null, bestScore = Infinity;
+  for (const e of enemies) {
+    if (e.dead || e.spawning) continue;
+    const dx = e.pos.x - player.pos.x, dz = e.pos.z - player.pos.z, d = Math.hypot(dx, dz);
+    if (d > 13) continue;
+    const off = Math.abs(angDiff(a, Math.atan2(dx, dz)));
+    if (off > 0.38) continue;
+    const score = off * 6 + d * 0.15;
+    if (score < bestScore) { bestScore = score; best = Math.atan2(dx, dz); }
+  }
+  return best === null ? a : a + angDiff(a, best) * 0.75;
+}
+let lastAimSource = 'mouse';
+addEventListener('mousemove', () => { lastAimSource = 'mouse'; });
 function aimAngle() {
-  if (Math.hypot(gamepad.aimX, gamepad.aimY) > 0.2) return Math.atan2(gamepad.aimX, -gamepad.aimY);
-  if (gamepad.connected && Math.hypot(gamepad.moveX, gamepad.moveY) > 0.2) return Math.atan2(gamepad.moveX, -gamepad.moveY);
+  if (Math.hypot(gamepad.aimX, gamepad.aimY) > 0.2) { lastAimSource = 'pad'; return assistAim(Math.atan2(gamepad.aimX, -gamepad.aimY)); }
+  if (gamepad.connected && Math.hypot(gamepad.moveX, gamepad.moveY) > 0.2) { lastAimSource = 'pad'; return assistAim(Math.atan2(gamepad.moveX, -gamepad.moveY)); }
+  if (lastAimSource === 'pad' && gamepad.connected) return assistAim(player.face);
   return Math.atan2(mouse.world.x - player.pos.x, mouse.world.z - player.pos.z);
 }
+// Short input buffer: a dash or trompo pressed a hair too early still comes out.
+const inputBuffer = { dash: 0, cast: 0 };
 function moveInput() {
   let x = gamepad.moveX, z = -gamepad.moveY;
   if (keys.KeyW || keys.ArrowUp) z -= 1; if (keys.KeyS || keys.ArrowDown) z += 1;
@@ -247,21 +267,46 @@ function moveInput() {
   }
   return { x: 0, z: 0 };
 }
+// Ground reticle showing where attacks will go.
+const aimReticle = (() => {
+  const g = new THREE.Group(), mat = basicMat('#fff8e7', 0.5);
+  g.add(new THREE.Mesh(new THREE.RingGeometry(1.0, 1.16, 24, 1, -Math.PI / 2 - 0.42, 0.84).rotateX(-Math.PI / 2), mat));
+  const tip = new THREE.Mesh(new THREE.ConeGeometry(0.17, 0.34, 3).rotateX(Math.PI / 2), mat); tip.scale.y = 0.2; tip.position.set(0, 0, 1.36); g.add(tip);
+  g.renderOrder = 2; g.userData.mat = mat; g.visible = false; scene.add(g); return g;
+})();
+function updateAimReticle(dt) {
+  const p = player, show = p.alive && (game.state === 'play' || game.state === 'hub') && p.dashT <= 0 && !specialLocksMovement(p.specialKind, p.heroT);
+  aimReticle.visible = show; if (!show) return;
+  const a = p.aimLock > 0 ? p.face : aimAngle();
+  aimReticle.position.set(p.pos.x, 0.07, p.pos.z);
+  aimReticle.rotation.y += angDiff(aimReticle.rotation.y, a) * Math.min(1, dt * 25);
+  aimReticle.userData.mat.opacity = damp(aimReticle.userData.mat.opacity, p.aimLock > 0 ? 0.85 : 0.4, 12, dt);
+}
 function lunge(v) { player.vel.x += Math.sin(player.face) * v; player.vel.z += Math.cos(player.face) * v; }
 
 function updatePlayer(dt) {
   const p = player; if (!p.alive) return;
   p.invuln -= dt; p.hurtBlink -= dt; p.atkCd -= dt; p.spCd -= dt; p.castCd -= dt; p.aimLock -= dt; p.comboT -= dt; p.swingT -= dt; p.spinT -= dt; p.atkSlow -= dt;
+  const wasReady = p.safeT >= 15;
   p.safeT += dt;
+  if (!wasReady && p.safeT >= 15 && p.heroT <= 0 && game.state === 'play') {
+    AudioSys.sfx('ready'); floatText(p.pos.x, 2.6, p.pos.z, `${HERO_POWER_ICON[p.hero]} PODER PRONTO!`, 'info');
+    shockRing(p.pos.x, p.pos.z, 2.2, 0.4, '#ffd166');
+  }
   if (p.heroT > 0) { p.heroT = Math.max(0, p.heroT - dt); updateHeroPower(dt); }
   if (p.hero === 'jorgito') { p.root.scale.setScalar(p.heroT > 0 ? 1.16 : 1); p.rig.tigerMask.visible = p.heroT > 0; }
   if (p.comboT <= 0) p.combo = 0;
   if (p.dashCharges < stat.dashMax()) { p.dashRegen -= dt; if (p.dashRegen <= 0) { p.dashCharges++; p.dashRegen = 0.45; } }
   const locked = specialLocksMovement(p.specialKind, p.heroT);
   const inp = locked ? { x: 0, z: 0 } : moveInput();
-  if (!locked && (pressed.Space || pressed.ShiftLeft || pressed.ShiftRight || gamepad.pressed[4] || gamepad.pressed[5]) && p.dashCharges > 0 && p.dashT <= 0) startDash(inp);
+  inputBuffer.dash -= dt; inputBuffer.cast -= dt;
+  if (pressed.Space || pressed.ShiftLeft || pressed.ShiftRight || gamepad.pressed[4] || gamepad.pressed[5] || gamepad.pressed[6] || gamepad.pressed[7]) inputBuffer.dash = 0.16;
+  if (pressed.KeyQ || pressed.KeyL || gamepad.pressed[3]) inputBuffer.cast = 0.2;
+  if (!locked && inputBuffer.dash > 0 && p.dashCharges > 0 && p.dashT <= 0) { inputBuffer.dash = 0; startDash(inp); }
   if (p.dashT > 0) {
     p.dashT -= dt; p.vel.set(p.dashDir.x * 27, 0, p.dashDir.z * 27);
+    p.ghostT = (p.ghostT || 0) - dt;
+    if (p.ghostT <= 0 && p.root.visible) { p.ghostT = 0.045; ghostTrail(p.root); }
     if (Math.random() < 0.7) particle(p.pos.x + rand(-0.2, 0.2), 0.15, p.pos.z + rand(-0.2, 0.2), 0, rand(0.5, 1.5), 0, '#efe3c8', rand(0.15, 0.3), 0.35, -2);
     if (P('dash_golpe')) for (const e of enemies) {
       if (e.dead || e.spawning || p.dashHit.has(e)) continue;
@@ -281,7 +326,7 @@ function updatePlayer(dt) {
     if (p.safeT >= 15) activateHeroPower();
     else if (p.spCd <= 0) p.spCd = p.spMax = Wp.special();
   }
-  if ((pressed.KeyQ || pressed.KeyL || gamepad.pressed[3]) && p.castCd <= 0) { p.face = aimAngle(); p.aimLock = 0.25; castTrompo(); p.castCd = p.castMax; }
+  if (inputBuffer.cast > 0 && p.castCd <= 0 && p.dashT <= 0) { inputBuffer.cast = 0; p.face = aimAngle(); p.aimLock = 0.25; castTrompo(); p.castCd = p.castMax; }
 
   // Standing specials pin the hero in place: knockback, lunges and dashes cannot move them either.
   if (specialLocksMovement(p.specialKind, p.heroT)) { p.vel.set(0, 0, 0); p.dashT = 0; p.autoMove = null; }
@@ -308,6 +353,7 @@ function updatePlayer(dt) {
   const guitarSeated = p.specialKind === 'guitar' && p.heroT > 0 && Math.hypot(p.vel.x, p.vel.z) < 0.4;
   p.root.visible = !(p.heroT > 0 && ['sedan', 'japa-base'].includes(p.specialKind)) && !(p.hero === 'japa' && p.heroT > 0 && !p.skin.startsWith('piscina')) && !guitarSeated && !(p.hurtBlink > 0 && Math.floor(p.hurtBlink * 18) % 2 === 0);
   if (Wp.update) Wp.update(dt);
+  updateAimReticle(dt);
 }
 
 function activateHeroPower() {
@@ -391,8 +437,9 @@ function activateHeroPower() {
     p.specialKind = 'tiger';
     showBanner('EL TIGRE!', 'Jorgito transformado — mais força e velocidade por 5 segundos', 2);
   }
-  AudioSys.sfx('boon');
-  burst(p.pos.x, 0.8, p.pos.z, ['#ffd166', '#fff8e7', '#70d6ff'], 24, 5, 0.2, 0.7);
+  AudioSys.sfx('power'); AudioSys.duck(0.35, 0.8); zoomPunch(0.7); addShake(0.35);
+  shockRing(p.pos.x, p.pos.z, 5, 0.45, '#ffd166');
+  burst(p.pos.x, 0.8, p.pos.z, ['#ffd166', '#fff8e7', '#70d6ff'], 32, 6, 0.2, 0.8);
 }
 function visibleEnemies() {
   return enemies.filter((e) => {
@@ -680,8 +727,8 @@ function startDash(inp) {
   const p = player; let dx = inp.x, dz = inp.z;
   if (!dx && !dz) { dx = Math.sin(p.face); dz = Math.cos(p.face); }
   p.dashDir.set(dx, 0, dz); p.dashT = 0.17; p.invuln = Math.max(p.invuln, 0.25);
-  p.dashCharges--; p.dashRegen = 0.5; p.dashHit = new Set(); p.face = Math.atan2(dx, dz); p.aimLock = 0;
-  AudioSys.sfx('dash');
+  p.dashCharges--; p.dashRegen = 0.5; p.dashHit = new Set(); p.face = Math.atan2(dx, dz); p.aimLock = 0; p.ghostT = 0;
+  AudioSys.sfx('dash', p.pos.x);
   burst(p.pos.x, 0.2, p.pos.z, '#efe3c8', 8, 3, 0.22, 0.4, -4, 1.5);
   if (P('totes_dash')) dropTote(p.pos.x, p.pos.z);
 }
@@ -747,7 +794,7 @@ function meleeArc(range, arc, dmg, source, knock, anglePadding = 0.2) {
     const dx = pr.x - p.pos.x, dz = pr.z - p.pos.z, d = Math.hypot(dx, dz);
     if (d < range && (arc >= TAU - 0.01 || Math.abs(angDiff(p.face, Math.atan2(dx, dz))) < arc / 2)) { pr.dead = true; burst(pr.x, pr.y, pr.z, '#ffffff', 5, 3, 0.12, 0.3); }
   }
-  if (hits) { hitstop = Math.max(hitstop, 0.04); addShake(0.12); }
+  if (hits) { hitstop = Math.max(hitstop, 0.045); addShake(0.14); camKick(Math.sin(p.face), Math.cos(p.face), 0.18); }
   return hits;
 }
 
@@ -761,11 +808,14 @@ function explode(x, z, r, dmg, source, color = '#ff9f1c', owner = 'p') {
 function hurtPlayer(dmg, sx, sz) {
   const p = player;
   if (!p.alive || p.invuln > 0 || p.jumpT > 0 || game.state !== 'play') return false;
-  dmg = Math.max(1, Math.round(dmg * stat.dmgTaken() * (1 + game.room * 0.025)));
-  p.hp -= dmg; p.safeT = 0; p.invuln = 0.75; p.hurtBlink = 0.75; addShake(0.5); hitstop = 0.07;
-  if (sx !== undefined) { const dx = p.pos.x - sx, dz = p.pos.z - sz, l = Math.hypot(dx, dz) || 1; p.vel.x += dx / l * 9; p.vel.z += dz / l * 9; }
-  $('hurtFlash').style.opacity = 1; setTimeout(() => ($('hurtFlash').style.opacity = 0), 120);
-  AudioSys.sfx('hurt'); floatText(p.pos.x, 2.2, p.pos.z, '-' + dmg, 'hurt');
+  dmg = Math.max(1, Math.round(dmg * stat.dmgTaken() * incomingDamageScale(game.room)));
+  const lostPower = p.safeT >= 15;
+  p.hp -= dmg; p.safeT = 0; p.invuln = 0.85; p.hurtBlink = 0.85; addShake(0.55); hitstop = 0.08;
+  if (sx !== undefined) { const dx = p.pos.x - sx, dz = p.pos.z - sz, l = Math.hypot(dx, dz) || 1; p.vel.x += dx / l * 9; p.vel.z += dz / l * 9; camKick(dx, dz, 0.35); }
+  $('hurtFlash').style.opacity = 1; setTimeout(() => ($('hurtFlash').style.opacity = 0), 140);
+  AudioSys.sfx('hurt', p.pos.x); AudioSys.duck(0.5, 0.25); floatText(p.pos.x, 2.2, p.pos.z, '-' + dmg, 'hurt');
+  if (lostPower) floatText(p.pos.x, 3, p.pos.z, 'poder perdido…', 'burn');
+  hudPulse('hp');
   burst(p.pos.x, 1, p.pos.z, ['#ff4d4d', '#ffffff'], 10, 4, 0.18, 0.4);
   if (p.hp <= 0) {
     if (p.revives > 0) {

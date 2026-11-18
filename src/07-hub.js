@@ -391,12 +391,14 @@ function swapHubLoadout(message, sfx = 'pickup') {
   refreshHubVisibility(); buildMannequin(); refreshHubLabels();
   toast(message, 2);
 }
-function openHub() {
+function openHub(fromRun = false) {
   game.state = 'hub';
   if (!HEROES[meta.hero]) meta.hero = 'jorgito';
   if (!WEAPONS[meta.weapon]) meta.weapon = 'luvas';
   clearTia();
-  $('modal').classList.add('hidden'); $('hud').classList.add('hidden'); $('bossBar').classList.add('hidden');
+  Menu.close(); AudioSys.setMood('hub');
+  $('hud').classList.add('hidden'); $('bossBar').classList.add('hidden'); $('lowHp').classList.remove('on');
+  if (fromRun) { fade(true); setTimeout(() => fade(false), 60); }
   clearRoomObjects();
   setupPlayer(meta.weapon);
   game.room = 0; game.type = 'hub'; game.exits = []; game.cleared = true;
@@ -405,7 +407,7 @@ function openHub() {
   player.root.position.copy(player.pos); player.root.rotation.y = Math.PI;
   camTarget.set(0, 0, -1.5);
   $('hubHud').classList.remove('hidden');
-  showBanner('Pátio de Treino', 'Escolha personagem, arma e melhorias — depois siga o tapete até o portão', 3);
+  if (fromRun) showBanner('Pátio de Treino', 'Melhore o cofrinho e tente de novo!', 2.4);
 }
 function leaveHubToRun() {
   if (game.state !== 'hub') return;
@@ -473,8 +475,8 @@ function updateHubHud(dt) {
   hub.hudT = 0.2;
   const p = player, w = WEAPONS[meta.weapon], affinity = weaponAffinity(meta.hero, meta.weapon), heroName = heroDisplayName(meta.hero);
   const skin = currentSkin(), skinOn = skin && meta.equippedSkins[meta.hero] === skin.id;
-  const special = p.heroT > 0 ? 'Especial em ação!' : p.safeT >= 15 ? '⭐ Especial PRONTO — botão direito / K / B' : `Especial em ${Math.ceil(15 - p.safeT)}s (15s sem dano)`;
-  const key = [meta.canicas, meta.hero, meta.weapon, skinOn, special, meta.runs, meta.wins, meta.best, controllerStatus].join('|');
+  const special = p.heroT > 0 ? 'Poder em ação!' : p.safeT >= 15 ? `⭐ Poder PRONTO — ${inputDevice === 'pad' ? 'B' : 'botão direito / K'}` : `Poder do personagem em ${Math.ceil(15 - p.safeT)}s (15s sem dano)`;
+  const key = [meta.canicas, meta.hero, meta.weapon, skinOn, special, meta.runs, meta.wins, meta.best, controllerStatus, inputDevice].join('|');
   if (key === hub.hudKey) return;
   hub.hudKey = key;
   const combo = affinity.active
@@ -482,11 +484,22 @@ function updateHubHud(dt) {
     : `<div class="combo-affinity">Afinidade de ${heroName}: ${WEAPONS[affinity.weapon].icon} ${WEAPONS[affinity.weapon].name} (+${Math.round(affinity.bonus * 100)}%)</div>`;
   $('hubInfo').innerHTML = `<div class="hub-chip">🔮 <b>${meta.canicas}</b> bolinhas de gude</div>
     <div class="hub-loadout"><div>${HERO_POWER_ICON[meta.hero]} <b>${heroName}</b>${skinOn ? ` · ${skin.icon} ${skin.name}` : ''}</div><div>${w.icon} ${w.name}</div>${combo}<div class="hub-special">${special}</div></div>`;
-  $('hubStats').innerHTML = `<span id="controller-status">${controllerStatus}</span><br>Partidas: <b>${meta.runs}</b> · Vitórias: <b>${meta.wins}</b> · Melhor sala: <b>${meta.best}</b>`;
+  $('hubStats').innerHTML = `<span id="controller-status">${controllerStatus}</span><br>Partidas: <b>${meta.runs}</b> · Vitórias: <b>${meta.wins}</b> · Melhor trecho: <b>${meta.best}</b>`;
+  $('hubHint').innerHTML = inputDevice === 'pad'
+    ? `${glyph('move')} andar · ${glyph('use')} usar estação · ${glyph('attack')} ataca o boneco · ${glyph('dash')} esquiva · <span class="kb pad">Select</span> menu · <span class="kb pad">Start</span> jogar`
+    : `${glyph('move')} andar · ${glyph('use')} usar estação · clique numa estação para ir até ela · ${glyph('attack')} ataca o boneco · ${glyph('dash')} esquiva · ${glyph('pause')} menu<br>Siga o <b>tapete vermelho</b> até o portão ao norte para começar`;
 }
 
 // ---------- boot ----------
-$('hubBrand').querySelector('.hub-logo').innerHTML = $('logo-template').innerHTML;
+// Each logo copy gets its own ids: gradients referenced by url(#id) break when the first copy is hidden.
+function logoCopy(prefix) {
+  return $('logo-template').innerHTML.replace(/id="([^"]+)"/g, `id="${prefix}-$1"`).replace(/url\(#([^)]+)\)/g, `url(#${prefix}-$1)`)
+    .replace(/(href|aria-labelledby)="#?([^"]+)"/g, (m, attr, ids) => `${attr}="${attr === 'href' ? '#' : ''}${ids.split(' ').map((id) => `${prefix}-${id}`).join(' ')}"`);
+}
+$('hubBrand').querySelector('.hub-logo').innerHTML = logoCopy('hublogo');
+$('titleScreen').querySelector('.logo').innerHTML = logoCopy('titlelogo');
+$('logo-template').remove();
 openHub();
+if (!location.search.includes('skiptitle')) openTitle(); else { game.state = 'hub'; }
 requestAnimationFrame(frame);
-if (location.search.includes('debug')) window.__elTigreAdventures = { game, player, enemies, meta, hub, openHub, startRun, startWave, enterRoom, spawnEnemy, queueSpawn, openBoonModal, RUN_PLAN, toScreen, projs, killEnemy, playerHit, WEAPONS, HERO_WEAPON_AFFINITY, camera, CAM_OFF, saveMeta, renderer, scene };
+if (location.search.includes('debug')) window.__elTigreAdventures = { game, player, enemies, meta, hub, openHub, startRun, startWave, enterRoom, spawnEnemy, queueSpawn, openBoonModal, RUN_PLAN, toScreen, projs, killEnemy, playerHit, WEAPONS, HERO_WEAPON_AFFINITY, camera, CAM_OFF, saveMeta, renderer, scene, hurtPlayer, Menu, settings, AudioSys };

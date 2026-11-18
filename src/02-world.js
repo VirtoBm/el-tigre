@@ -85,7 +85,7 @@ function makeFadeable(obj, x, z, r) {
 function updateFadeables(dt, px, pz) {
   for (const f of world.fadeables) {
     const behind = pz < f.z + 0.5 && pz > f.z - f.r - 3.5 && Math.abs(px - f.x) < f.r + 0.6;
-    const target = behind || Math.hypot(px - f.x, pz - f.z) < f.r ? 0.28 : 1;
+    const target = behind || Math.hypot(px - f.x, pz - f.z) < f.r ? 0.16 : 1;
     f.op = damp(f.op, target, 10, dt);
     for (const m of f.mats) { m.opacity = f.op; m.depthWrite = f.op > 0.95; }
   }

@@ -709,14 +709,17 @@ function clearFx() { for (const o of fxObjs) { fxRoot.remove(o.mesh); o.mesh.tra
 // floating text & world labels
 const labelsEl = $('labels'); const floaters = []; const worldLabels = [];
 function floatText(x, y, z, text, cls = '') {
+  const numeric = /^\d+$/.test(text);
+  if (numeric && !settings.damageNumbers && cls !== 'heal') return;
   if (floaters.length > 45) { const f = floaters.shift(); f.el.remove(); }
   const el = document.createElement('div'); el.className = 'ft ' + cls; el.textContent = text; labelsEl.appendChild(el);
-  floaters.push({ el, x, y, z, t: 0, vx: rand(-0.7, 0.7) });
+  if (numeric && !cls) el.style.fontSize = Math.round(clamp(15 + Math.sqrt(+text) * 1.6, 15, 30)) + 'px';
+  floaters.push({ el, x, y, z, t: 0, vx: rand(-0.9, 0.9), vy: numeric ? 3.2 : 1.8 });
 }
 function updateFloaters(dt) {
   for (let i = floaters.length - 1; i >= 0; i--) {
-    const f = floaters[i]; f.t += dt; f.y += dt * 1.8; f.x += f.vx * dt;
-    const s = toScreen(f.x, f.y, f.z); const sc = f.t < 0.12 ? 1 + (0.12 - f.t) * 5 : 1;
+    const f = floaters[i]; f.t += dt; f.vy = Math.max(0.6, f.vy - dt * 6); f.y += dt * f.vy; f.x += f.vx * dt;
+    const s = toScreen(f.x, f.y, f.z); const sc = f.t < 0.1 ? 0.6 + f.t * 9 : f.t < 0.2 ? 1.5 - (f.t - 0.1) * 5 : 1;
     f.el.style.transform = `translate(${s.x}px,${s.y}px) translate(-50%,-50%) scale(${sc})`;
     f.el.style.opacity = f.t > 0.6 ? Math.max(0, 1 - (f.t - 0.6) / 0.3) : 1;
     if (f.t > 0.9) { f.el.remove(); floaters.splice(i, 1); }
@@ -739,5 +742,28 @@ function updateLabels() {
 }
 function clearLabels() { for (const l of worldLabels) l.el.remove(); worldLabels.length = 0; for (const f of floaters) f.el.remove(); floaters.length = 0; }
 
-let shakeAmt = 0, hitstop = 0;
-function addShake(a) { shakeAmt = Math.min(1.2, shakeAmt + a); }
+// Camera feedback: smooth "trauma" shake (squared for a nicer falloff), directional kick and zoom punch.
+let shakeAmt = 0, hitstop = 0, camZoom = 0;
+const camKickV = new THREE.Vector3();
+function addShake(a) { shakeAmt = Math.min(1.2, shakeAmt + a * settings.shake); }
+function camKick(dx, dz, amt) { const l = Math.hypot(dx, dz) || 1; camKickV.x += dx / l * amt * settings.shake; camKickV.z += dz / l * amt * settings.shake; }
+function zoomPunch(a) { camZoom = Math.max(camZoom, a); }
+function applyCameraFeedback(dt, t) {
+  const tr = shakeAmt * shakeAmt;
+  if (tr > 0) {
+    camera.position.x += (Math.sin(t * 47.3) + Math.sin(t * 91.7) * 0.5) * tr * 0.45;
+    camera.position.y += (Math.sin(t * 53.1 + 1.3) + Math.sin(t * 83.9) * 0.5) * tr * 0.3;
+    camera.position.z += Math.sin(t * 61.7 + 2.1) * tr * 0.25;
+  }
+  shakeAmt = Math.max(0, shakeAmt - dt * 2.2);
+  camera.position.x += camKickV.x; camera.position.z += camKickV.z;
+  camKickV.multiplyScalar(Math.exp(-dt * 14));
+  if (camZoom > 0) { camera.position.lerp(camTarget, camZoom * 0.12); camZoom = Math.max(0, camZoom - dt * 2.5); }
+}
+// Translucent copies of a rig left behind while dashing.
+function ghostTrail(root, color = '#9ad8ff', life = 0.28) {
+  const ghost = root.clone(true), mat = basicMat(color, 0.5);
+  ghost.traverse((o) => { if (o.isMesh) { o.material = mat; o.castShadow = false; } if (o.isSprite) o.visible = false; });
+  ghost.position.copy(root.position); ghost.quaternion.copy(root.quaternion); ghost.scale.copy(root.scale);
+  return addFx(ghost, life, (o) => { mat.opacity = 0.5 * (1 - o.t / o.dur); });
+}

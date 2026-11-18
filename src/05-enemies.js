@@ -33,7 +33,7 @@ const ENEMY_DEFS = {
   rainha: { name: 'Iguana Rainha', hp: 640, r: 1.45, speed: 2.6, heavy: true, elite: true, build: () => buildIguana('#2d6a4f', 1.8, true), ai: aiRainha, anim: animIguana },
   maton: { name: 'El Matón do Bairro', hp: 1500, r: 1.3, speed: 3.4, heavy: true, boss: true, build: () => { const k = buildKid({ shirt: '#6c757d', shorts: '#3a5a8c', socks: '#f8f9fa', stripe: '#343a40', cap: '#d62828', hair: '#1b1b1b', skin: '#a86b3c', wide: 1.35 }); k.root.scale.setScalar(2.1); return k; }, ai: aiMaton, anim: animKidEnemy },
   soldado: { name: 'Soldado do Exército', hp: 52, r: 0.62, speed: 3.8, cost: 3, build: () => buildKid({ shirt: '#687a4c', shorts: '#425337', socks: '#393d2d', shoes: '#242820', hair: '#302e28', skin: '#a86b3c', cap: '#3f5132', wide: 1.12 }), ai: aiSoldier, anim: animKidEnemy },
-  elReyna: { name: 'El Reyna', hp: 2500, r: 1.38, speed: 5.9, heavy: true, boss: true, build: () => { const d = buildDog('#a97643', '#6e3c28', 1.95, '#ffd166'); d.root.scale.setScalar(1.35); return d; }, ai: aiElReyna, anim: animDog },
+  elReyna: { name: 'El Reyna', hp: 2250, r: 1.38, speed: 5.9, heavy: true, boss: true, build: () => { const d = buildDog('#a97643', '#6e3c28', 1.95, '#ffd166'); d.root.scale.setScalar(1.35); return d; }, ai: aiElReyna, anim: animDog },
   boneco: { name: 'Boneco de Treino', hp: 420, r: 0.62, speed: 0, heavy: true, dummy: true, build: buildTrainingDummy, ai: aiDummy, anim: animDummy },
 };
 
@@ -88,15 +88,43 @@ function buildCyclist() {
   return rig;
 }
 
+// ---------- floating health bars (ordinary enemies, elites and the dummy; bosses use the top bar) ----------
+const hpBarGeo = new THREE.PlaneGeometry(1, 1).translate(0.5, 0, 0); hpBarGeo.userData.shared = true;
+function barMat(color, opacity) { const m = basicMat(color, opacity); m.depthTest = false; return m; }
+function ensureHpBar(e) {
+  if (e.bar || e.def.boss) return;
+  const w = clamp(e.r * 2, 0.9, 2), g = new THREE.Group(); g.renderOrder = 10;
+  const bg = new THREE.Mesh(hpBarGeo, barMat('#1b120c', 0.8)); bg.scale.set(w + 0.1, 0.22, 1); bg.position.set(-(w + 0.1) / 2, 0, 0);
+  const chip = new THREE.Mesh(hpBarGeo, barMat('#fff3c4', 0.95)); chip.scale.set(w, 0.13, 1); chip.position.set(-w / 2, 0, 0.001);
+  const fill = new THREE.Mesh(hpBarGeo, barMat(e.def.elite ? '#ffb703' : e.def.dummy ? '#4cc9f0' : '#ff4d4d', 1)); fill.scale.set(w, 0.13, 1); fill.position.set(-w / 2, 0, 0.002);
+  for (const m of [bg, chip, fill]) m.renderOrder = 10;
+  g.add(bg, chip, fill); scene.add(g);
+  e.bar = { g, fill, chip, w, chipK: 1, hold: 0 };
+}
+function updateHpBar(e, dt) {
+  const b = e.bar; if (!b) return;
+  const k = clamp(e.hp / e.maxHp, 0, 1);
+  b.fill.scale.x = Math.max(0.001, b.w * k);
+  b.hold -= dt; if (b.hold <= 0) b.chipK = damp(b.chipK, k, 6, dt);
+  b.chip.scale.x = Math.max(0.001, b.w * Math.max(k, b.chipK));
+  b.g.position.set(e.pos.x, e.data.barY + e.yOff, e.pos.z); b.g.quaternion.copy(camera.quaternion);
+  b.g.visible = !e.dead && !e.data.expel && k < 1;
+}
+function removeHpBar(e) { if (!e.bar) return; scene.remove(e.bar.g); for (const m of e.bar.g.children) m.material.dispose(); e.bar = null; }
+function removeEnemyVisuals(e) { scene.remove(e.root); disposeOwn(e.root); removeHpBar(e); }
+
 function queueSpawn(type, x, z, delay = 0.9) {
-  teleCircle(x, z, 0.9, delay, '#ffffff');
+  teleCircle(x, z, 0.9, delay, ENEMY_DEFS[type]?.boss || ENEMY_DEFS[type]?.elite ? '#ff6b35' : '#ffffff');
   pendingSpawns.push({ type, x, z, t: delay });
 }
+// Prefers spots at a fair distance (not on top of the hero, not miles away) and away from other pending spawns.
 function randomSpawnSpot(minDist = 6) {
-  for (let i = 0; i < 60; i++) {
+  for (let i = 0; i < 80; i++) {
     const x = rand(-W + 1.5, W - 1.5), z = rand(-D + 1.5, D - 2);
-    if (Math.hypot(x - player.pos.x, z - player.pos.z) < minDist) continue;
+    const d = Math.hypot(x - player.pos.x, z - player.pos.z);
+    if (d < minDist || (i < 50 && d > minDist + 11)) continue;
     if (!spotFree(x, z, 1.0)) continue;
+    if (i < 60 && pendingSpawns.some((s) => Math.hypot(s.x - x, s.z - z) < 1.6)) continue;
     return { x, z };
   }
   return { x: rand(-W + 2, W - 2), z: -D + 3 };
@@ -105,7 +133,7 @@ function spawnEnemy(type, x, z) {
   const def = ENEMY_DEFS[type]; const rig = def.build(); const root = rig.root;
   root.position.set(x, 0, z); scene.add(root);
   const mats = ownMaterials(root);
-  const hpScale = def.boss ? 1 : def.elite ? 1 + game.room * 0.055 : 1 + game.room * 0.14;
+  const hpScale = game.state === 'hub' ? 1 : enemyHpScale(game.room, def);
   const e = {
     type, def, rig, root, mats, pos: new THREE.Vector3(x, 0, z), vel: new THREE.Vector3(), kb: new THREE.Vector3(), r: def.r,
     hp: Math.round(def.hp * hpScale), maxHp: 0, state: 'chase', t: rand(0.2, 0.8), cd: rand(0.6, 1.6), face: Math.atan2(player.pos.x - x, player.pos.z - z),
@@ -113,27 +141,40 @@ function spawnEnemy(type, x, z) {
     hitDone: false, data: {}, sm: 1, yOff: 0, pop: 0.25, windup: false, baseScale: root.scale.x,
   };
   e.maxHp = e.hp; enemies.push(e);
+  e.data.barY = new THREE.Box3().setFromObject(root).max.y + 0.4;
   burst(x, 0.3, z, '#efe3c8', 12, 4, 0.25, 0.5);
+  if (!def.dummy) AudioSys.sfx('spawn', x);
   if (def.boss || def.elite) game.bossE = e;
+  if (def.boss) { AudioSys.sfx('bossIntro'); AudioSys.duck(0.3, 1.2); addShake(0.5); zoomPunch(0.6); }
   return e;
 }
 function damageEnemy(e, dmg, cls = '') {
   if (e.dead) return;
-  e.hp -= dmg; e.flash = 0.07;
+  e.hp -= dmg; e.flash = 0.08; e.data.squash = 1;
+  ensureHpBar(e); if (e.bar) e.bar.hold = 0.45;
   floatText(e.pos.x + rand(-0.3, 0.3), 1.4 + e.r, e.pos.z, String(dmg), cls);
-  if (cls !== 'burn') { AudioSys.sfx(cls === 'crit' ? 'crit' : 'hit'); burst(e.pos.x, 0.8, e.pos.z, ['#ffffff', '#ffd166'], 5, 3, 0.14, 0.3); }
-  if (cls === 'crit') hitstop = Math.max(hitstop, 0.06);
+  if (cls !== 'burn' && cls !== 'poison') {
+    AudioSys.sfx(cls === 'crit' ? 'crit' : 'hit', e.pos.x);
+    burst(e.pos.x, 0.8, e.pos.z, cls === 'crit' ? ['#ffffff', '#ffd166', '#ff9f1c'] : ['#ffffff', '#ffd166'], cls === 'crit' ? 10 : 5, cls === 'crit' ? 5 : 3, 0.14, 0.3);
+  }
+  if (cls === 'crit') { hitstop = Math.max(hitstop, 0.06); addShake(0.12); }
   if (e.hp <= 0) killEnemy(e);
 }
 function killEnemy(e) {
-  e.dead = true; e.deathT = 0.3; player.kills++;
+  e.dead = true; e.deathT = 0.45; player.kills++;
   if (e.data.mealMesh) { e.root.remove(e.data.mealMesh); e.data.mealMesh = null; }
-  AudioSys.sfx('die');
+  // Fly away along the last knockback, spinning, then vanish in a puff.
+  const kl = Math.hypot(e.kb.x, e.kb.z), dx = kl > 0.5 ? e.kb.x / kl : e.pos.x - player.pos.x, dz = kl > 0.5 ? e.kb.z / kl : e.pos.z - player.pos.z, dl = Math.hypot(dx, dz) || 1;
+  e.data.dieV = { x: dx / dl * (e.def.heavy ? 2 : 7), z: dz / dl * (e.def.heavy ? 2 : 7), y: e.def.heavy ? 2 : 6 };
+  removeHpBar(e);
+  AudioSys.sfx('kill', e.pos.x); if (!e.def.dummy) hitstop = Math.max(hitstop, 0.035);
   const col = e.type === 'pombo' ? ['#9aa5b1', '#ffffff', '#4f9d8a'] : e.type === 'iguana' || e.type === 'rainha' ? ['#6a994e', '#386641', '#f4a261'] : ['#ffffff', '#efe3c8', '#ffd166'];
-  burst(e.pos.x, 0.7, e.pos.z, col, 16, 5, 0.25, 0.7);
+  burst(e.pos.x, 0.7, e.pos.z, col, 18, 5.5, 0.25, 0.7);
+  shockRing(e.pos.x, e.pos.z, 1.2 + e.r, 0.22, '#ffffff');
+  if (game.state === 'play' && !e.data.expel) { const coins = coinDrop(e.def); if (coins) spawnCoins(e.pos.x, e.pos.z, coins); }
   if (e.st.burn > 0 && P('aji_estouro')) { const x = e.pos.x, z = e.pos.z; later(0.05, () => explode(x, z, 2.5, P('aji_estouro'), 'estouro', '#e63946')); }
   if (e.def.boss || e.def.elite) {
-    hitstop = 0.25; addShake(1);
+    hitstop = 0.25; addShake(1); zoomPunch(1); AudioSys.duck(0.25, 1);
     for (const o of enemies) if (!o.dead && o !== e) { o.hp = 0; killEnemy(o); }
     pendingSpawns.length = 0;
     for (const pr of projs) if (pr.owner === 'e') pr.dead = true;
@@ -172,9 +213,11 @@ function updateEnemies(dt) {
   for (let i = enemies.length - 1; i >= 0; i--) {
     const e = enemies[i];
     if (e.dead) {
-      e.deathT -= dt; const k = Math.max(0, e.deathT / 0.3);
-      e.root.scale.setScalar(e.baseScale * (0.2 + 0.8 * k)); e.root.rotation.z += dt * 8;
-      if (e.deathT <= 0) { scene.remove(e.root); disposeOwn(e.root); enemies.splice(i, 1); }
+      e.deathT -= dt; const k = Math.max(0, e.deathT / 0.45), v = e.data.dieV;
+      if (v) { e.pos.x += v.x * dt; e.pos.z += v.z * dt; v.y -= 22 * dt; e.yOff = Math.max(0, e.yOff + v.y * dt); v.x *= 0.92; v.z *= 0.92; }
+      e.root.position.set(e.pos.x, e.yOff, e.pos.z);
+      e.root.scale.setScalar(e.baseScale * (k > 0.35 ? 1 : 0.15 + 0.85 * k / 0.35)); e.root.rotation.z += dt * 10; e.root.rotation.y += dt * 6;
+      if (e.deathT <= 0) { burst(e.pos.x, 0.5, e.pos.z, ['#efe3c8', '#ffffff'], 8, 2.5, 0.22, 0.4); removeEnemyVisuals(e); enemies.splice(i, 1); }
       continue;
     }
     updateEnemy(e, dt);
@@ -213,7 +256,7 @@ function updateTia(dt) {
 }
 function updateEnemy(e, dt) {
   const st = e.st;
-  const pace = 1 + game.room * 0.022;
+  const pace = enemyPace(game.room);
   e.anim += dt; e.t -= dt * pace; e.cd -= dt * pace; e.windup = false;
   if (e.pop > 0) { e.pop -= dt; e.root.scale.setScalar(e.baseScale * (1 - Math.max(0, e.pop) / 0.25 * 0.7)); }
   if (e.data.expel) { updateExpelledEnemy(e, dt); return; }
@@ -252,9 +295,20 @@ function updateEnemy(e, dt) {
     const dx = e.pos.x - o.pos.x, dz = e.pos.z - o.pos.z, d = Math.hypot(dx, dz), min = e.r + o.r;
     if (d < min && d > 0.001) { const push = (min - d) * (o.def.heavy && !e.def.heavy ? 0.9 : 0.5); e.pos.x += dx / d * push; e.pos.z += dz / d * push; }
   }
+  // Enemies yield to the hero instead of overlapping (heavies barely move).
+  if (player.alive && !e.def.dummy) {
+    const dx = e.pos.x - player.pos.x, dz = e.pos.z - player.pos.z, d = Math.hypot(dx, dz), min = e.r + player.r * 0.8;
+    if (d < min && d > 0.001) { const push = (min - d) * (e.def.heavy ? 0.25 : 0.8); e.pos.x += dx / d * push; e.pos.z += dz / d * push; }
+  }
   e.hitWall = resolveCollision(e.pos, e.r);
   const cur = e.root.rotation.y; e.root.rotation.y = cur + angDiff(cur, e.face) * Math.min(1, dt * 12);
   e.root.position.set(e.pos.x, e.yOff, e.pos.z);
+  // Squash & stretch on hit.
+  if (e.data.squash > 0) {
+    e.data.squash = Math.max(0, e.data.squash - dt * 7); const q = Math.sin(e.data.squash * Math.PI) * 0.18;
+    e.root.scale.set(e.baseScale * (1 + q), e.baseScale * (1 - q), e.baseScale * (1 + q));
+  } else if (e.pop <= 0 && e.root.scale.y !== e.baseScale && !e.data.expel) e.root.scale.setScalar(e.baseScale);
+  updateHpBar(e, dt);
   if (player.specialKind === 'sedan' && player.heroT > 0 && Math.hypot(e.pos.x - player.pos.x, e.pos.z - player.pos.z) < 8) e.root.rotation.y += dt * 11;
   if (player.specialKind === 'guitar' && player.heroT > 0) {
     const away = Math.atan2(e.pos.x - player.pos.x, e.pos.z - player.pos.z);
@@ -353,17 +407,17 @@ function animDog(e) {
   e.rig.body.rotation.x = e.state === 'aim' ? -0.15 : 0;
   e.rig.head.rotation.x = e.windup ? Math.sin(e.anim * 30) * 0.15 : 0;
 }
-function animKidEnemy(e) {
-  const mv = Math.min(1, Math.hypot(e.vel.x, e.vel.z) / 3); e.data.ph = (e.data.ph || 0) + Math.hypot(e.vel.x, e.vel.z) * 0.016 * 1.7 / e.baseScale;
+function animKidEnemy(e, dt) {
+  const mv = Math.min(1, Math.hypot(e.vel.x, e.vel.z) / 3); e.data.ph = (e.data.ph || 0) + Math.hypot(e.vel.x, e.vel.z) * dt * 1.7 / e.baseScale;
   animKid(e.rig, mv, e.data.ph);
   e.rig.arms[0].rotation.x = e.windup ? -2.6 : -Math.sin(e.data.ph) * 0.7 * mv;
   e.rig.body.rotation.y = e.state === 'stompAir' ? e.anim * 10 : 0;
 }
-function animIguana(e) {
+function animIguana(e, dt) {
   const mv = Math.min(1, Math.hypot(e.vel.x, e.vel.z) / 2);
   e.rig.tail.forEach((t, i) => (t.rotation.y = Math.sin(e.anim * 4 - i * 0.7) * (0.25 + (e.windup ? 0.3 : 0))));
   e.rig.legs.forEach((l, i) => (l.rotation.y = Math.sin(e.anim * 12 + i * Math.PI) * 0.5 * mv));
-  if (e.data.spin > 0) { e.data.spin -= 0.016; e.rig.body.rotation.y += 0.016 * 30; } else e.rig.body.rotation.y = damp(e.rig.body.rotation.y % TAU, 0, 10, 0.016);
+  if (e.data.spin > 0) { e.data.spin -= dt; e.rig.body.rotation.y += dt * 30; } else e.rig.body.rotation.y = damp(e.rig.body.rotation.y % TAU, 0, 10, dt);
   e.rig.head.rotation.x = e.windup ? -0.4 : 0;
 }
 
@@ -387,7 +441,7 @@ function aiDog(e) {
   const tp = toP(e);
   switch (e.state) {
     case 'chase': chase(e, tp.a); e.face = tp.a;
-      if (tp.d < 8 && e.cd <= 0) { e.state = 'aim'; e.t = 0.7; e.data.dir = tp.a; teleRect(e.pos.x, e.pos.z, tp.a, 9, 1.5, 0.7); AudioSys.sfx('bark'); }
+      if (tp.d < 8 && e.cd <= 0) { e.state = 'aim'; e.t = 0.7; e.data.dir = tp.a; teleRect(e.pos.x, e.pos.z, tp.a, 9, 1.5, 0.7); AudioSys.sfx('bark', e.pos.x); }
       break;
     case 'aim': e.vel.set(0, 0, 0); e.windup = true; e.face = e.data.dir;
       if (e.t <= 0) { e.state = 'charge'; e.t = 0.5; e.hitDone = false; } break;
@@ -463,7 +517,7 @@ function aiSoldier(e) {
       if (e.t <= 0) {
         const aim = toP(e).a;
         for (let k = -1; k <= 1; k++) { const a = aim + k * 0.16; spawnProj({ owner: 'e', x: e.pos.x, z: e.pos.z, y: 1.05, vx: Math.sin(a) * 13, vz: Math.cos(a) * 13, r: 0.2, dmg: 8, life: 2, kind: 'ecap' }); }
-        AudioSys.sfx('shoot');
+        AudioSys.sfx('eshoot', e.pos.x);
         if (--d.shots > 0) e.t = 0.26;
         else { e.state = 'grenadeWind'; e.t = 0.58; }
       }
@@ -508,7 +562,7 @@ function aiSmoker(e) {
       if (e.t <= 0) {
         const a = tp.a + rand(-0.09, 0.09);
         spawnProj({ owner: 'e', x: e.pos.x + Math.sin(a) * 0.7, z: e.pos.z + Math.cos(a) * 0.7, y: 1.1, vx: Math.sin(a) * 11, vz: Math.cos(a) * 11, r: 0.16, dmg: 9, life: 2.2, kind: 'cigarette' });
-        e.state = 'chase'; e.cd = rand(1.7, 2.6); AudioSys.sfx('shoot');
+        e.state = 'chase'; e.cd = rand(1.7, 2.6); AudioSys.sfx('eshoot', e.pos.x);
       }
       break;
     default: e.state = 'chase';
@@ -527,7 +581,7 @@ function aiIguana(e) {
         if (tp.d < 3.3 + player.r) hurtPlayer(14, e.pos.x, e.pos.z);
         e.state = 'rest'; e.t = 1; } break;
     case 'spitwind': e.vel.set(0, 0, 0); e.windup = true; e.face = tp.a;
-      if (e.t <= 0) { for (let k = -1; k <= 1; k++) { const a = tp.a + k * 0.2; spawnProj({ owner: 'e', x: e.pos.x, z: e.pos.z, y: 0.6, vx: Math.sin(a) * 9, vz: Math.cos(a) * 9, r: 0.22, dmg: 8, life: 2, kind: 'spit' }); } AudioSys.sfx('shoot'); e.state = 'rest'; e.t = 0.6; } break;
+      if (e.t <= 0) { for (let k = -1; k <= 1; k++) { const a = tp.a + k * 0.2; spawnProj({ owner: 'e', x: e.pos.x, z: e.pos.z, y: 0.6, vx: Math.sin(a) * 9, vz: Math.cos(a) * 9, r: 0.22, dmg: 8, life: 2, kind: 'spit' }); } AudioSys.sfx('eshoot', e.pos.x); e.state = 'rest'; e.t = 0.6; } break;
     default: e.vel.multiplyScalar(0.8); if (e.t <= 0) { e.state = 'chase'; e.cd = rand(1.2, 2); }
   }
 }
@@ -537,20 +591,20 @@ function aiMancha(e) {
   switch (e.state) {
     case 'chase': chase(e, tp.a, 0.8); e.face = tp.a;
       if (e.t <= 0) { const nxt = d.seq[d.i++ % d.seq.length];
-        if (nxt === 'triple') { d.n = 3; e.state = 'aim'; e.t = 0.6; d.dir = tp.a; teleRect(e.pos.x, e.pos.z, tp.a, 11, 2.4, 0.6); AudioSys.sfx('bark'); }
+        if (nxt === 'triple') { d.n = 3; e.state = 'aim'; e.t = 0.6; d.dir = tp.a; teleRect(e.pos.x, e.pos.z, tp.a, 11, 2.4, 0.6); AudioSys.sfx('bark', e.pos.x); }
         else if (nxt === 'bark') { e.state = 'barkWind'; e.t = 0.7; teleCircle(e.pos.x, e.pos.z, 2.2, 0.7, '#ffb703'); }
-        else { e.state = 'howl'; e.t = 1; AudioSys.sfx('bark'); }
+        else { e.state = 'howl'; e.t = 1; AudioSys.sfx('bark', e.pos.x); }
       } break;
     case 'aim': e.vel.set(0, 0, 0); e.windup = true; e.face = d.dir; if (e.t <= 0) { e.state = 'charge'; e.t = 0.5; e.hitDone = false; } break;
     case 'charge': e.vel.set(Math.sin(d.dir) * 19 * e.sm, 0, Math.cos(d.dir) * 19 * e.sm); touchHurt(e, 16);
       if (Math.random() < 0.8) particle(e.pos.x, 0.2, e.pos.z, rand(-1, 1), 1, rand(-1, 1), '#efe3c8', 0.35, 0.4, -2);
       if (e.t <= 0 || (e.hitWall && e.t < 0.45)) {
         if (e.hitWall) addShake(0.3);
-        if (--d.n > 0) { const a = toP(e).a; e.state = 'aim'; e.t = 0.45; d.dir = a; teleRect(e.pos.x, e.pos.z, a, 11, 2.4, 0.45); AudioSys.sfx('bark'); }
+        if (--d.n > 0) { const a = toP(e).a; e.state = 'aim'; e.t = 0.45; d.dir = a; teleRect(e.pos.x, e.pos.z, a, 11, 2.4, 0.45); AudioSys.sfx('bark', e.pos.x); }
         else { e.state = 'rest'; e.t = 1.3; }
       } break;
     case 'barkWind': e.vel.set(0, 0, 0); e.windup = true;
-      if (e.t <= 0) { AudioSys.sfx('bark'); hazardRing(e.pos.x, e.pos.z, 11, 9, 14, '#ffb703'); later(0.35, () => !e.dead && hazardRing(e.pos.x, e.pos.z, 11, 9, 14, '#ffb703')); addShake(0.4); e.state = 'rest'; e.t = 1.2; } break;
+      if (e.t <= 0) { AudioSys.sfx('bark', e.pos.x); hazardRing(e.pos.x, e.pos.z, 11, 9, 14, '#ffb703'); later(0.35, () => !e.dead && hazardRing(e.pos.x, e.pos.z, 11, 9, 14, '#ffb703')); addShake(0.4); e.state = 'rest'; e.t = 1.2; } break;
     case 'howl': e.vel.set(0, 0, 0); e.windup = true; e.face += 0.05;
       if (e.t <= 0) { if (enemies.filter((o) => !o.dead).length < 6) { for (const t of ['cachorro', 'pombo', 'pombo']) { const s = randomSpawnSpot(4); queueSpawn(t, s.x, s.z); } } e.state = 'rest'; e.t = 0.8; } break;
     default: e.vel.multiplyScalar(0.85); if (e.t <= 0) { e.state = 'chase'; e.t = rand(1, 1.6); }
@@ -572,7 +626,7 @@ function aiRainha(e) {
     case 'spit': e.vel.set(0, 0, 0); e.windup = true; e.face = tp.a;
       if (e.t <= 0) {
         for (let k = -3; k <= 3; k++) { const a = tp.a + k * 0.16; spawnProj({ owner: 'e', x: e.pos.x, z: e.pos.z, y: 0.9, vx: Math.sin(a) * 10, vz: Math.cos(a) * 10, r: 0.28, dmg: 9, life: 2.4, kind: 'spit' }); }
-        AudioSys.sfx('shoot'); if (--d.n > 0) e.t = 0.5; else { e.state = 'rest'; e.t = 0.8; }
+        AudioSys.sfx('eshoot', e.pos.x); if (--d.n > 0) e.t = 0.5; else { e.state = 'rest'; e.t = 0.8; }
       } break;
     case 'summon': e.vel.set(0, 0, 0); e.windup = true;
       if (e.t <= 0) { if (enemies.filter((o) => !o.dead).length < 6) for (const t of ['iguana', 'pombo', 'pombo']) { const s = randomSpawnSpot(4); queueSpawn(t, s.x, s.z); } e.state = 'rest'; e.t = 0.6; } break;
@@ -598,7 +652,7 @@ function aiMaton(e) {
       const k = 1 - Math.max(0, e.t) / d.airT;
       e.pos.x = lerp(d.sx, d.tx, k); e.pos.z = lerp(d.sz, d.tz, k); e.yOff = Math.sin(k * Math.PI) * 5; e.vel.set(0, 0, 0); e.windup = true;
       if (e.t <= 0) {
-        e.yOff = 0; addShake(0.8); AudioSys.sfx('boom'); burst(e.pos.x, 0.3, e.pos.z, ['#efe3c8', '#a39382'], 30, 8, 0.35, 0.6, -10, 4);
+        e.yOff = 0; addShake(0.8); AudioSys.sfx('boom', e.pos.x); burst(e.pos.x, 0.3, e.pos.z, ['#efe3c8', '#a39382'], 30, 8, 0.35, 0.6, -10, 4);
         if (Math.hypot(player.pos.x - e.pos.x, player.pos.z - e.pos.z) < 3.5 + player.r) hurtPlayer(20, e.pos.x, e.pos.z);
         hazardRing(e.pos.x, e.pos.z, 9, 8, 10, '#ff6b35');
         if (--d.n > 0) { e.state = 'pause'; e.t = 0.3; } else { e.state = 'rest'; e.t = p2 ? 0.7 : 1.1; }
@@ -613,12 +667,12 @@ function aiMaton(e) {
     case 'caps': e.vel.set(0, 0, 0); e.windup = true;
       if (e.t <= 0) {
         for (let k = 0; k < 12; k++) { const a = k / 12 * TAU + d.off; spawnProj({ owner: 'e', x: e.pos.x, z: e.pos.z, y: 1.2, vx: Math.sin(a) * 8.5, vz: Math.cos(a) * 8.5, r: 0.28, dmg: 8, life: 3, kind: 'ecap' }); }
-        d.off += 0.13; AudioSys.sfx('shoot'); if (--d.n > 0) e.t = 0.38; else { e.state = 'rest'; e.t = 0.9; }
+        d.off += 0.13; AudioSys.sfx('eshoot', e.pos.x); if (--d.n > 0) e.t = 0.38; else { e.state = 'rest'; e.t = 0.9; }
       } break;
     case 'aim': e.vel.set(0, 0, 0); e.windup = true; e.face = d.dir; if (e.t <= 0) { e.state = 'charge'; e.t = 0.75; e.hitDone = false; } break;
     case 'charge': e.vel.set(Math.sin(d.dir) * 20 * e.sm, 0, Math.cos(d.dir) * 20 * e.sm); touchHurt(e, 18);
       if (Math.random() < 0.8) particle(e.pos.x, 0.2, e.pos.z, rand(-1, 1), 1, rand(-1, 1), '#efe3c8', 0.35, 0.4, -2);
-      if (e.hitWall && e.t < 0.7) { e.state = 'dazed'; e.t = 1.4; e.st.stun = 1.4; addShake(0.6); AudioSys.sfx('boom'); toast('💫 El Matón bateu a cabeça!'); }
+      if (e.hitWall && e.t < 0.7) { e.state = 'dazed'; e.t = 1.4; e.st.stun = 1.4; addShake(0.6); AudioSys.sfx('boom', e.pos.x); toast('💫 El Matón bateu a cabeça!'); }
       else if (e.t <= 0) { e.state = 'rest'; e.t = 0.6; } break;
     case 'summon': e.vel.set(0, 0, 0); e.windup = true;
       if (e.t <= 0) { if (enemies.filter((o) => !o.dead).length < 7) for (const t of ['pombo', 'pombo', 'pombo', 'moleque']) { const s = randomSpawnSpot(5); queueSpawn(t, s.x, s.z); } e.state = 'rest'; e.t = 0.6; } break;
@@ -631,9 +685,10 @@ function aiElReyna(e) {
   if (e.hp < e.maxHp * 0.78 && !d.supreme) {
     d.supreme = true; e.state = 'summon'; e.t = 1.2; e.vel.set(0, 0, 0);
     spawnTia(); showBanner('Poder supremo: Tia!', 'Uma aliada invencível entrou na luta', 3);
-    AudioSys.sfx('bark'); addShake(0.65);
+    AudioSys.sfx('bark', e.pos.x); addShake(0.65);
   }
   const enraged = e.hp < e.maxHp * 0.42;
+  if (enraged && !d.enragedShown) { d.enragedShown = true; showBanner('El Reyna está furioso!', 'Ataques mais rápidos — o uivo vem em dobro', 2.2); AudioSys.sfx('growl', e.pos.x); addShake(0.6); }
   switch (e.state) {
     case 'chase':
       chase(e, tp.a, enraged ? 1.25 : 1); e.face = tp.a;
@@ -642,10 +697,10 @@ function aiElReyna(e) {
         const attack = attacks[d.attackIndex++ % attacks.length];
         if (attack === 'bite') {
           e.state = 'biteWind'; e.t = enraged ? 0.42 : 0.62; d.dir = tp.a; e.windup = true;
-          teleRect(e.pos.x, e.pos.z, d.dir, 8, 1.8, e.t, '#ff6b35'); AudioSys.sfx('bark');
+          teleRect(e.pos.x, e.pos.z, d.dir, 8, 1.8, e.t, '#ff6b35'); AudioSys.sfx('bark', e.pos.x);
         } else if (attack === 'howl') {
           e.state = 'howlWind'; e.t = enraged ? 0.5 : 0.72;
-          teleCircle(e.pos.x, e.pos.z, 10.5, e.t, '#ffb703'); AudioSys.sfx('bark');
+          teleCircle(e.pos.x, e.pos.z, 10.5, e.t, '#ffb703'); AudioSys.sfx('bark', e.pos.x);
         } else if (attack === 'leap') {
           d.sx = e.pos.x; d.sz = e.pos.z;
           d.tx = clamp(player.pos.x + player.vel.x * 0.32, -W + 2, W - 2);
@@ -664,14 +719,14 @@ function aiElReyna(e) {
       break;
     case 'bite':
       e.vel.set(Math.sin(d.dir) * (enraged ? 27 : 23) * e.sm, 0, Math.cos(d.dir) * (enraged ? 27 : 23) * e.sm);
-      touchHurt(e, 30); e.windup = true;
-      if (e.hitWall && e.t < 0.4) { e.state = 'dazed'; e.t = 0.45; }
+      touchHurt(e, enraged ? 26 : 22); e.windup = true;
+      if (e.hitWall && e.t < 0.4) { e.state = 'dazed'; e.t = 0.9; e.st.stun = 0.9; addShake(0.35); AudioSys.sfx('boom', e.pos.x); floatText(e.pos.x, 2.6, e.pos.z, 'TONTO!', 'info'); }
       else if (e.t <= 0) { e.state = 'rest'; e.t = enraged ? 0.55 : 0.85; }
       break;
     case 'howlWind':
       e.vel.set(0, 0, 0); e.windup = true;
       if (e.t <= 0) {
-        AudioSys.sfx('bark'); hazardRing(e.pos.x, e.pos.z, 11.5, enraged ? 15 : 12, 16, '#ffb703');
+        AudioSys.sfx('bark', e.pos.x); hazardRing(e.pos.x, e.pos.z, 11.5, enraged ? 15 : 12, 16, '#ffb703');
         if (enraged) later(0.28, () => !e.dead && hazardRing(e.pos.x, e.pos.z, 11.5, 15, 13, '#ff6b35'));
         addShake(0.4); e.state = 'rest'; e.t = enraged ? 0.42 : 0.65;
       }
@@ -685,8 +740,8 @@ function aiElReyna(e) {
       e.pos.x = lerp(d.sx, d.tx, k); e.pos.z = lerp(d.sz, d.tz, k);
       e.yOff = Math.sin(k * Math.PI) * 4.5; e.vel.set(0, 0, 0); e.windup = true;
       if (e.t <= 0) {
-        e.yOff = 0; addShake(0.75); AudioSys.sfx('boom'); shockRing(e.pos.x, e.pos.z, 3.8, 0.35, '#ff8c42');
-        if (Math.hypot(player.pos.x - e.pos.x, player.pos.z - e.pos.z) < 3.8 + player.r) hurtPlayer(enraged ? 28 : 23, e.pos.x, e.pos.z);
+        e.yOff = 0; addShake(0.75); AudioSys.sfx('boom', e.pos.x); shockRing(e.pos.x, e.pos.z, 3.8, 0.35, '#ff8c42');
+        if (Math.hypot(player.pos.x - e.pos.x, player.pos.z - e.pos.z) < 3.8 + player.r) hurtPlayer(enraged ? 24 : 20, e.pos.x, e.pos.z);
         hazardRing(e.pos.x, e.pos.z, 7.5, 8, 11, '#ff8c42'); e.state = 'rest'; e.t = enraged ? 0.42 : 0.62;
       }
       break;
@@ -697,7 +752,7 @@ function aiElReyna(e) {
         const dx = player.pos.x - e.pos.x, dz = player.pos.z - e.pos.z;
         const forward = dx * Math.sin(d.dir) + dz * Math.cos(d.dir);
         const side = Math.abs(dx * Math.cos(d.dir) - dz * Math.sin(d.dir));
-        if (forward > -1 && forward < 6.5 && side < 2.3) hurtPlayer(enraged ? 26 : 20, e.pos.x, e.pos.z);
+        if (forward > -1 && forward < 6.5 && side < 2.3) hurtPlayer(enraged ? 22 : 18, e.pos.x, e.pos.z);
         shockRing(e.pos.x, e.pos.z, 4.5, 0.25, '#e63946'); AudioSys.sfx('swing'); e.state = 'rest'; e.t = 0.55;
       }
       break;
