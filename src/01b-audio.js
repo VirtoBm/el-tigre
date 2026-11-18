@@ -6,6 +6,7 @@ function saveSettings() { try { localStorage.setItem(SETTINGS_KEY, JSON.stringif
 // Bus layout: sfx (panned, pitch-varied) + reverb send, music (duck + low-pass for menus), all into a compressor.
 const AudioSys = {
   ctx: null, last: {}, mood: 'hub', nextMood: 'hub', bpm: 92, _dest: null, _pitch: 1,
+  tracks: {}, combatOn: false, cur: null, recent: [], jumpAt: 0, radioOn: true, radio: null, radioLevel: 0,
   get muted() { return settings.muted; },
   init() {
     if (this.ctx) { if (this.ctx.state === 'suspended') this.ctx.resume(); return; }
@@ -26,6 +27,7 @@ const AudioSys = {
     this.musFilter = ctx.createBiquadFilter(); this.musFilter.type = 'lowpass'; this.musFilter.frequency.value = 18000; this.musFilter.Q.value = 0.7;
     this.musG = ctx.createGain();
     this.musG.connect(this.musDuck); this.musDuck.connect(this.musFilter); this.musFilter.connect(this.master);
+    this.trackG = ctx.createGain(); this.trackG.connect(this.musDuck);
     const musVerb = ctx.createGain(); musVerb.gain.value = 0.12; this.musFilter.connect(musVerb); musVerb.connect(this.verb);
     const nlen = ctx.sampleRate; const buf = ctx.createBuffer(1, nlen, ctx.sampleRate); const nd = buf.getChannelData(0);
     for (let i = 0; i < nlen; i++) nd[i] = Math.random() * 2 - 1;
@@ -33,10 +35,121 @@ const AudioSys = {
     this.applyVolumes();
     this.buildSongs(); this.step = 0; this.next = ctx.currentTime + 0.15;
     setInterval(() => this.schedule(), 25);
+    this.loadTracks();
+  },
+  // The real music (embedded as base64 by the build) is decoded once; synth music remains as fallback.
+  async loadTracks() {
+    let data = null;
+    try { data = JSON.parse(document.getElementById('audioData').textContent); } catch (e) { return; }
+    for (const name of Object.keys(data || {})) {
+      try {
+        const bin = atob(data[name]), bytes = new Uint8Array(bin.length);
+        for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+        this.tracks[name] = await this.ctx.decodeAudioData(bytes.buffer);
+      } catch (e) { /* keep synth fallback for this track */ }
+    }
+    if (this.tracks.radio) this.buildRadio();
+    this.applyVolumes();
+  },
+  // ---- old battery radio: band-limited, boxy, soft-clipped, hissy, with wow & flutter ----
+  buildRadio() {
+    const c = this.ctx, r = this.radio = {};
+    const src = c.createBufferSource(); src.buffer = this.tracks.radio; src.loop = true;
+    const hp = c.createBiquadFilter(); hp.type = 'highpass'; hp.frequency.value = 460; hp.Q.value = 0.9;
+    const lp = r.lp = c.createBiquadFilter(); lp.type = 'lowpass'; lp.frequency.value = 3000; lp.Q.value = 1.1;
+    const box = c.createBiquadFilter(); box.type = 'peaking'; box.frequency.value = 1500; box.Q.value = 1.3; box.gain.value = 8;
+    const nasal = c.createBiquadFilter(); nasal.type = 'peaking'; nasal.frequency.value = 2400; nasal.Q.value = 2; nasal.gain.value = 3;
+    const shaper = c.createWaveShaper(), curve = new Float32Array(1024);
+    for (let i = 0; i < curve.length; i++) { const x = i / 512 - 1; curve[i] = Math.tanh(x * 3.2) * 0.9; }
+    shaper.curve = curve; shaper.oversample = '2x';
+    const drive = c.createGain(); drive.gain.value = 1.5;
+    this.radioBus = c.createGain();
+    src.connect(drive); drive.connect(hp); hp.connect(box); box.connect(nasal); nasal.connect(shaper); shaper.connect(lp); lp.connect(this.radioBus);
+    // tape-like pitch wobble + a slow battery sag
+    for (const [f, cents] of [[0.9, 7], [0.13, 14], [6.5, 2.5]]) {
+      const o = c.createOscillator(), g = c.createGain(); o.frequency.value = f; g.gain.value = cents; o.connect(g); g.connect(src.detune); o.start();
+    }
+    // constant hiss
+    const hiss = c.createBufferSource(); hiss.buffer = this.noiseBuf; hiss.loop = true;
+    const hf = c.createBiquadFilter(); hf.type = 'bandpass'; hf.frequency.value = 3200; hf.Q.value = 0.4;
+    const hg = c.createGain(); hg.gain.value = 0.055; hiss.connect(hf); hf.connect(hg); hg.connect(this.radioBus);
+    r.an = c.createAnalyser(); r.an.fftSize = 256; lp.connect(r.an); r.buf = new Uint8Array(r.an.fftSize);
+    r.g = c.createGain(); r.g.gain.value = 0; r.pan = c.createStereoPanner ? c.createStereoPanner() : null;
+    this.radioBus.connect(r.g); if (r.pan) { r.g.connect(r.pan); r.pan.connect(this.musDuck); } else r.g.connect(this.musDuck);
+    src.start(0, Math.random() * 40); hiss.start();
+    r.src = src; r.crackleT = 0;
+  },
+  radioToggle() {
+    this.radioOn = !this.radioOn;
+    if (this.ctx) { this.noise(0.03, 0.2, 2500, 'bandpass', 2, 0, null); this.tone(this.radioOn ? 900 : 500, 0.05, 'square', 0.05); }
+    return this.radioOn;
+  },
+  // Called every frame: loudness follows distance, stereo follows the radio's place on screen.
+  updateRadio(dt, listener, spot, active) {
+    const r = this.radio; if (!this.ctx || !r) return;
+    const t = this.ctx.currentTime, d = Math.hypot(listener.x - spot.x, listener.z - spot.z), prox = radioProximity(d);
+    const target = active && this.radioOn && !settings.muted ? prox * 0.85 * volumeCurve(settings.music) * 1.6 : 0;
+    r.g.gain.setTargetAtTime(target, t, 0.12);
+    r.lp.frequency.setTargetAtTime(1700 + 1500 * prox, t, 0.2);
+    if (r.pan) r.pan.pan.setTargetAtTime(clamp((spot.x - camTarget.x) / 16, -0.8, 0.8), t, 0.1);
+    r.an.getByteTimeDomainData(r.buf);
+    let sum = 0; for (let i = 0; i < r.buf.length; i++) { const v = (r.buf[i] - 128) / 128; sum += v * v; }
+    this.radioLevel = damp(this.radioLevel, active && this.radioOn ? Math.min(1, Math.sqrt(sum / r.buf.length) * 2.6) : 0, 14, dt);
+    // random speaker crackle
+    r.crackleT -= dt;
+    if (r.crackleT <= 0 && target > 0.02) { r.crackleT = rand(0.25, 1.6); this.noise(rand(0.006, 0.03), rand(0.12, 0.4), rand(2500, 6000), 'highpass', 1, 0, this.radioBus); }
+  },
+  // ---- combat music: random bar-aligned excerpts of "Mi Nombre Es Jorge" ----
+  setCombat(on, boss = false) {
+    if (!this.tracks.combate) { if (on !== this.combatOn) this.setMood(on ? (boss ? 'boss' : 'run') : 'calm'); this.combatOn = on; return; }
+    if (on === this.combatOn) return;
+    this.combatOn = on;
+    if (on) { this.recent = []; this.jumpAt = 0; this.startSegment(this.ctx.currentTime + 0.05, pickExcerpt(this.tracks.combate.duration, this.recent), 0.9, true); }
+    else this.stopCombat();
+  },
+  startSegment(at, ex, fade, first = false) {
+    const c = this.ctx, buf = this.tracks.combate, cfg = COMBAT_TRACK, bar = 240 / cfg.bpm;
+    const src = c.createBufferSource(); src.buffer = buf;
+    const g = c.createGain(); src.connect(g); g.connect(this.trackG);
+    g.gain.setValueAtTime(0, at);
+    if (first) g.gain.linearRampToValueAtTime(1, at + fade);
+    else { const n = 24, up = new Float32Array(n); for (let i = 0; i < n; i++) up[i] = Math.sin(i / (n - 1) * Math.PI / 2); g.gain.setValueCurveAtTime(up, at, fade); }
+    src.start(at, ex.start, ex.length);
+    this.recent.push(ex.bar); if (this.recent.length > 5) this.recent.shift();
+    const old = this.cur;
+    if (old) {
+      const n = 24, down = new Float32Array(n); for (let i = 0; i < n; i++) down[i] = Math.cos(i / (n - 1) * Math.PI / 2);
+      old.g.gain.cancelScheduledValues(at); old.g.gain.setValueCurveAtTime(down, at, fade);
+      try { old.src.stop(at + fade + 0.05); } catch (e) { /* already stopped */ }
+    }
+    this.cur = { src, g, t0: at, start: ex.start, switchAt: at + cfg.segBars * bar };
+    this.jumpAt = 0;
+  },
+  stopCombat() {
+    const c = this.cur; this.cur = null; if (!c) return;
+    const t = this.ctx.currentTime;
+    c.g.gain.cancelScheduledValues(t); c.g.gain.setValueAtTime(Math.max(0.0001, c.g.gain.value), t); c.g.gain.linearRampToValueAtTime(0, t + 1.3);
+    try { c.src.stop(t + 1.4); } catch (e) { /* ignore */ }
+  },
+  // A new wave: switch to another excerpt on the next beat so the fight "changes gear".
+  combatJump() {
+    if (!this.combatOn || !this.cur || !this.tracks.combate) return;
+    const t = this.ctx.currentTime, beat = 60 / COMBAT_TRACK.bpm, pos = this.cur.start + (t + 0.12 - this.cur.t0);
+    const k = Math.ceil((pos - COMBAT_TRACK.phase) / beat), at = this.cur.t0 + (COMBAT_TRACK.phase + k * beat - this.cur.start);
+    this.jumpAt = Math.min(this.cur.switchAt, at);
+  },
+  runCombatSchedule() {
+    const cur = this.cur; if (!cur || !this.combatOn) return;
+    const now = this.ctx.currentTime, due = this.jumpAt || cur.switchAt;
+    if (now + 0.12 < due) return;
+    const cfg = COMBAT_TRACK, beat = 60 / cfg.bpm, T = Math.max(due, now + 0.02);
+    const kk = Math.round((cur.start + (T - cur.t0) - cfg.phase) / beat), inBar = ((kk % 4) + 4) % 4;
+    this.startSegment(T, pickExcerpt(this.tracks.combate.duration, this.recent, Math.random, cfg, inBar), cfg.fade);
   },
   applyVolumes() {
     if (!this.ctx) return;
     const t = this.ctx.currentTime;
+    this.trackG.gain.setTargetAtTime(volumeCurve(settings.music) * 0.95, t, 0.03);
     this.master.gain.setTargetAtTime(settings.muted ? 0 : volumeCurve(settings.master) * 0.9, t, 0.03);
     this.sfxG.gain.setTargetAtTime(volumeCurve(settings.sfx), t, 0.03);
     this.musG.gain.setTargetAtTime(volumeCurve(settings.music) * 0.5, t, 0.03);
@@ -162,6 +275,7 @@ const AudioSys = {
   },
   schedule() {
     if (!this.ctx || this.ctx.state !== 'running') return;
+    this.runCombatSchedule();
     while (this.next < this.ctx.currentTime + 0.15) {
       if (this.step % 8 === 0) {
         if (this.mood !== this.nextMood) { const toBoss = this.nextMood === 'boss' || this.mood === 'boss'; this.mood = this.nextMood; if (toBoss) this.step = 0; }
@@ -172,6 +286,9 @@ const AudioSys = {
     }
   },
   playStep(s, t) {
+    // The real tracks own combat and the hub radio; the synth only fills the gaps.
+    if (this.combatOn && this.tracks.combate) return;
+    if (this.mood === 'hub' && this.tracks.radio) return;
     const m = this.mood, boss = m === 'boss', full = m === 'run' || boss, soft = m === 'title' || m === 'hub';
     const sg = boss ? this.bossSong : this.song;
     const bar = Math.floor(s / 8), i = s % 8, d = this.musG;

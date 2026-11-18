@@ -68,3 +68,29 @@ test('settings are sanitized and clamped', () => {
   assert.equal(settings.volumeCurve(1), 1);
   assert.ok(settings.volumeCurve(0.5) < 0.5);
 });
+
+const music = load('00-settings.js', 'COMBAT_TRACK, pickExcerpt, radioProximity');
+test('combat excerpts are bar-aligned, avoid intro/outro and recent bars', () => {
+  const cfg = music.COMBAT_TRACK, dur = 220, beat = 60 / cfg.bpm, bar = beat * 4;
+  const seen = new Set(), recent = [];
+  for (let i = 0; i < 200; i++) {
+    const ex = music.pickExcerpt(dur, recent, Math.random);
+    assert.ok(ex.start >= cfg.introSkip - 0.01, 'skips the intro');
+    assert.ok(ex.start + ex.length <= dur - cfg.outroSkip + 0.5, 'skips the outro');
+    assert.ok(Math.abs((ex.start - cfg.phase) / bar - ex.bar) < 1e-6, 'starts on a bar line');
+    assert.ok(!recent.includes(ex.bar), 'avoids recently played bars');
+    recent.push(ex.bar); if (recent.length > 5) recent.shift(); seen.add(ex.bar);
+  }
+  assert.ok(seen.size > 15, 'uses many different parts of the song');
+  const shifted = music.pickExcerpt(dur, [], () => 0.5, cfg, 2);
+  assert.ok(Math.abs(shifted.start - (cfg.phase + shifted.bar * bar + 2 * beat)) < 1e-6, 'keeps the beat position when jumping');
+  assert.equal(music.pickExcerpt(10, [], Math.random).bar, 0, 'tiny tracks fall back safely');
+});
+
+test('radio loudness falls off with distance but never fully vanishes', () => {
+  assert.equal(music.radioProximity(0), 1);
+  assert.equal(music.radioProximity(2.5), 1);
+  assert.ok(music.radioProximity(8) < 1 && music.radioProximity(8) > 0.12);
+  assert.equal(music.radioProximity(40), 0.12);
+  assert.ok(music.radioProximity(5) > music.radioProximity(10));
+});

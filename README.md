@@ -37,6 +37,11 @@ As ondas ficam mais numerosas e rápidas conforme você avança: são três onda
 - **Game feel**: hit-stop, tremor de câmera suave, empurrão direcional, câmera que olha um pouco à frente da mira, zoom nos momentos fortes, câmera lenta no último golpe da sala, rastro fantasma na esquiva, buffer de comandos para esquiva/trompo, inimigos que se deformam ao apanhar e voam ao cair, moedas que saltam e são atraídas até você, mira no chão e vinheta pulsante com batimento quando a vida está baixa.
 - **Áudio** 100% sintetizado: compressor, reverb de praça, panorâmica estéreo pela posição na tela, variação de timbre e trilha de cumbia que muda conforme o momento (título, pátio, combate, calmaria e um tema próprio para El Reyna), abafada nos menus.
 
+## Músicas
+- **Combate:** *Mi Nombre Es Jorge* é a trilha oficial. Ela toca **só durante o combate** (ondas, elite e chefe): ao começar a luta entra um trecho aleatório da música, cortado no compasso, e a cada ~19s (e a cada nova onda) o jogo troca para outro trecho com um crossfade, sem repetir os trechos recentes. Sala limpa, loja, fonte, menus e o pátio voltam à trilha calma.
+- **Pátio:** *El Solitario* toca num **radinho de pilha** ao lado do tapete. O som passa por um filtro de rádio velho (graves cortados, médios estourados e um pouco de distorção, chiado, estalos e oscilação de pitch) e fica mais alto conforme você chega perto. Aperte E (ou A) perto dele para ligar/desligar. Ao sair do pátio o rádio se cala.
+- Os arquivos originais ficam em `assets/audio/originals/`. O build embute as versões leves de `assets/audio/game/` (`combate.mp3` e `radio.mp3`, ~4,7 MB) no HTML, então o jogo continua em um arquivo só e funciona offline. Para trocar uma música, recodifique-a com `ffmpeg` e substitua o arquivo em `assets/audio/game/`; se o andamento mudar, ajuste `COMBAT_TRACK` em `src/00-settings.js`.
+
 ## Ritmo e equilíbrio
 - As ondas chegam em grupos escalonados; a próxima começa quando sobra no máximo um inimigo da anterior, mantendo o combate fluindo.
 - Inimigos derrubam pesos (chefes e elites pagam mais). A loja sempre oferece comida se você estiver ferido, e as saídas sugerem mais empanadas quando a vida está baixa.

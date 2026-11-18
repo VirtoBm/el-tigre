@@ -8,6 +8,7 @@ const HUB_SPAWN = { x: 0, z: 2.4 };
 const HUB_HERO_ORDER = ['jorgito', 'crazyleleo', 'japa', 'matheusinho', 'vitao', 'bruno', 'thiagao'];
 const HUB_UPGRADE_X = [-9.6, -6.4, -3.2, 3.2, 6.4, 9.6];
 const HUB_DUMMY = { x: 7.6, z: -7.2 };
+const HUB_RADIO = { x: -4.7, z: 2.4 };
 const hub = { stations: [], pickables: [], heroStatues: {}, weaponStands: {}, upgradeItems: {}, wardrobe: null, nearest: null, pendingStation: null, pendingT: 0, dummyRespawn: 1.4, hudKey: '', hudT: 0, touchId: null };
 const _hubRay = new THREE.Raycaster(), _hubNdc = new THREE.Vector2(), _hubGround = new THREE.Plane(new THREE.Vector3(0, 1, 0), 0), _hubPoint = new THREE.Vector3();
 
@@ -313,6 +314,40 @@ function buildWardrobe() {
   world.animated.push((t) => { const rig = hub.wardrobe?.rig; if (rig) { animKid(rig, 0.12, t * 1.5); holder.rotation.y = Math.sin(t * 0.6) * 0.5; } });
 }
 
+// ---------- radio de pilha (plays El Solitario) ----------
+function buildRadioProp() {
+  const { x, z } = HUB_RADIO;
+  const g = new THREE.Group(); g.position.set(x, 0, z); g.rotation.y = 0.55; world.group.add(g);
+  mk(CYL(0.5, 0.58, 0.62, 12), '#8c5a3c', 0, 0.31, 0, g); mk(CYL(0.55, 0.55, 0.07, 12), '#f6e7c8', 0, 0.64, 0, g);
+  const radio = new THREE.Group(); radio.position.y = 0.68; g.add(radio);
+  mk(BOX(0.98, 0.62, 0.36), '#9a5a2e', 0, 0.31, 0, radio);
+  mk(BOX(1.02, 0.07, 0.4), '#e8d3a3', 0, 0.63, 0, radio); mk(BOX(1.02, 0.05, 0.4), '#e8d3a3', 0, 0.02, 0, radio);
+  const grille = mk(BOX(0.46, 0.4, 0.04), '#2a1c12', -0.2, 0.31, 0.19, radio, false);
+  for (let i = 0; i < 6; i++) mk(BOX(0.4, 0.016, 0.05), '#cdb98a', -0.2, 0.15 + i * 0.065, 0.2, radio, false);
+  mk(BOX(0.34, 0.16, 0.04), '#f3e6bf', 0.27, 0.42, 0.19, radio, false);
+  const needle = mk(BOX(0.012, 0.13, 0.05), '#d62828', 0.17, 0.42, 0.21, radio, false);
+  for (const kx of [0.18, 0.36]) { const knob = mk(CYL(0.055, 0.055, 0.05, 10), '#2a1c12', kx, 0.2, 0.2, radio, false); knob.rotation.x = Math.PI / 2; mk(BOX(0.012, 0.05, 0.02), '#f6e7c8', kx, 0.22, 0.235, radio, false); }
+  const handle = mk(BOX(0.56, 0.05, 0.05), '#2a1c12', 0, 0.74, 0, radio, false); mk(BOX(0.05, 0.1, 0.05), '#2a1c12', -0.28, 0.69, 0, radio, false); mk(BOX(0.05, 0.1, 0.05), '#2a1c12', 0.28, 0.69, 0, radio, false);
+  const ant = new THREE.Group(); ant.position.set(0.42, 0.66, -0.1); ant.rotation.z = -0.5; radio.add(ant);
+  mk(CYL(0.012, 0.012, 1.1, 6), '#c9c9c9', 0, 0.55, 0, ant, false); mk(SPH(0.03, 6, 5), '#c9c9c9', 0, 1.12, 0, ant, false);
+  const led = mk(SPH(0.03, 6, 5), M('#ff3b30', { emissive: '#ff3b30', emissiveIntensity: 0.9 }), 0.44, 0.52, 0.19, radio, false);
+  addCircle(x, z, 0.62);
+  world.animated.push((t, dt) => {
+    const on = AudioSys.radioOn && AudioSys.radio, lvl = on ? AudioSys.radioLevel : 0;
+    radio.scale.set(1 + lvl * 0.025, 1 + lvl * 0.06, 1); radio.rotation.z = Math.sin(t * 18) * lvl * 0.012;
+    ant.rotation.z = -0.5 + Math.sin(t * 1.4) * 0.04; needle.position.x = 0.17 + (on ? Math.sin(t * 0.25) * 0.05 : 0);
+    led.material.emissiveIntensity = AudioSys.radioOn ? 0.9 : 0.05;
+    if (on && lvl > 0.06 && game.state === 'hub' && Math.random() < dt * (2 + lvl * 8)) particle(x + rand(-0.4, 0.4), 1.9, z + rand(-0.3, 0.3), rand(-0.4, 0.4), rand(1.2, 2), rand(-0.4, 0.4), pick(['#ffd166', '#ff8fab', '#4cc9f0', '#ffffff']), 0.11, 1.1, 0.5, 0.5);
+  });
+  addStation({
+    kind: 'radio', id: 'radio', x, z, ax: x + 1.5, az: z + 0.9, r: 2.4, labelY: 2.7, pick: g,
+    html: (near) => (near
+      ? `<span class="ic">📻</span><b>Radinho de pilha</b><div class="st-desc">${AudioSys.radioOn ? 'Tocando "El Solitario" — chegue perto para ouvir melhor.' : 'Desligado.'}</div>${keyHint(AudioSys.radioOn ? 'desligar' : 'ligar')}`
+      : `📻 ${AudioSys.radioOn ? 'El Solitario' : 'Rádio (off)'}`),
+    action: () => { const on = AudioSys.radioToggle(); toast(on ? '📻 Rádio ligado — "El Solitario"' : '📻 Rádio desligado', 1.6); refreshHubLabels(); },
+  });
+}
+
 // ---------- training dummy & gate ----------
 function buildTrainingCorner() {
   const mat = mk(new THREE.CircleGeometry(2.3, 32).rotateX(-Math.PI / 2), '#6b8f5e', HUB_DUMMY.x, 0.03, HUB_DUMMY.z, world.group, false);
@@ -375,7 +410,7 @@ function buildHub() {
   bunting(-5.2, 7);
   buildHubPath();
   for (const [x, z] of [[-14.6, -10.4], [14.6, -10.4], [-14.6, 10.6], [14.6, 10.6]]) palm(x, z, 5.2);
-  addGateStation(); buildHeroGallery(); buildArsenal(); buildCofrinho(); buildWardrobe(); buildTrainingCorner();
+  addGateStation(); buildHeroGallery(); buildArsenal(); buildCofrinho(); buildWardrobe(); buildTrainingCorner(); buildRadioProp();
   refreshHubVisibility();
 }
 function refreshHubVisibility() {

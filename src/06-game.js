@@ -249,7 +249,8 @@ function enterRoom(def) {
   const sub = def.type === 'combat' && game.room === 0 ? 'Montería, Colômbia — avance ao norte' : ROOM_SUBS[def.type];
   showBanner(title, `Trecho ${game.room + 1}/${RUN_PLAN.length} — ${sub}`);
   refreshRunTrack();
-  AudioSys.setMood(def.type === 'shop' || def.type === 'rest' ? 'calm' : def.type === 'boss' ? 'boss' : 'run');
+  // Combat music starts with the first wave (see the frame loop); until then the calm tune plays.
+  AudioSys.setMood('calm');
   if (def.type === 'shop') { setupShop(); game.cleared = true; game.begun = true; }
   if (def.type === 'rest') { setupRest(); game.cleared = true; game.begun = true; }
   if (def.type === 'combat' || def.type === 'army') game.waves = buildWaves(game.room);
@@ -271,7 +272,7 @@ function startWave() {
   const list = game.waves[game.wave++];
   // Stagger arrivals so a wave reads as a group pouring in rather than a pop-in.
   list.forEach((t, i) => { const s = randomSpawnSpot(6); queueSpawn(t, s.x, s.z, 0.55 + i * 0.09); });
-  if (game.waves.length > 1) { AudioSys.sfx('wave'); if (game.wave > 1) floatText(player.pos.x, 3, player.pos.z, `ONDA ${game.wave}/${game.waves.length}`, 'info'); }
+  if (game.waves.length > 1) { AudioSys.sfx('wave'); if (game.wave > 1) { floatText(player.pos.x, 3, player.pos.z, `ONDA ${game.wave}/${game.waves.length}`, 'info'); AudioSys.combatJump(); } }
   game.breather = 0.8;
 }
 function roomCleared() {
@@ -707,6 +708,10 @@ function frame(now) {
   if (hitstop > 0) { hitstop -= dt; gdt = dt * 0.08; }
   else if (game.slowmo > 0) { game.slowmo -= dt; gdt = dt * lerp(1, 0.25, Math.min(1, game.slowmo / 0.4)); }
   Menu.update(dt);
+  // Music routing: the combat track plays only while a fight is running; the hub radio only in the hub.
+  const fighting = (game.state === 'play' || game.state === 'pause' || game.state === 'modal') && game.begun && !game.cleared && player.alive && ['combat', 'elite', 'boss', 'army'].includes(game.type);
+  AudioSys.setCombat(fighting, game.type === 'boss');
+  AudioSys.updateRadio(dt, player.pos, HUB_RADIO, game.state === 'hub' || (game.state === 'pause' && game.pausedFrom === 'hub'));
   const pausePressed = pressed.Escape || pressed.KeyP || gamepad.pressed[9];
   if (game.state === 'title') {
     if (Object.keys(pressed).length || gamepad.pressed.some(Boolean)) leaveTitle();
